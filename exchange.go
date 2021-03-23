@@ -202,6 +202,9 @@ func (e *Exchange) NewSession(ctx context.Context, root cid.Cid) (*Session, erro
 			return
 		}
 	})
+	// keep track of all the offers recived during a session
+	offers := make(chan deal.Offer)
+
 	session := &Session{
 		regionTopics: e.regionTopics,
 		net:          e.net,
@@ -209,10 +212,12 @@ func (e *Exchange) NewSession(ctx context.Context, root cid.Cid) (*Session, erro
 		retriever:    cl,
 		clientAddr:   e.wallet.DefaultAddress(),
 		done:         done,
+		offers:       offers,
 		unsub:        unsubscribe,
 		// We create a fresh new store for this session
 		storeID: e.multiStore.Next(),
 	}
+	e.net.SetDelegate(session)
 	return session, nil
 }
 

@@ -1,30 +1,22 @@
 [metadata]
-  name = "single_content_copy"
+  name = "stream_debug"
 
 [global]
   plan = "discovery"
-  case = "gossip"
-  total_instances = 51
+  case = "stream"
+  total_instances = 41
   builder = "docker:go"
   runner = "local:docker"
 
 [global.run.test_params]
-  clients = "1"
-  providers = "50"
   replication = "1"
-  bootstrap = "0"
   regions = '["Global"]'
   conn_per_peer = "10"
 
 [[groups]]
-  id = "bootstrap"
-  [groups.instances]
-    count = 0
-
-[[groups]]
   id = "providers"
    [groups.instances]
-    count = 50
+    count = 40
 
 [[groups]]
   id = "clients"

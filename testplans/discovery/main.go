@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-multistore"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
@@ -31,6 +32,8 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/myelnet/pop"
 	"github.com/myelnet/pop/supply"
+	"github.com/myelnet/pop/retrieval/deal"
+	"github.com/myelnet/pop/retrieval"
 	"github.com/testground/sdk-go/run"
 	"github.com/testground/sdk-go/runtime"
 	"github.com/testground/sdk-go/sync"
@@ -42,6 +45,7 @@ func main() {
 
 var testcases = map[string]interface{}{
 	"gossip": run.InitializedTestCaseFn(runGossip),
+	"stream": run.InitializedTestCaseFn(runStream),
 }
 
 func runGossip(runenv *runtime.RunEnv, initCtx *run.InitContext) error {
@@ -262,4 +266,102 @@ func importFile(ctx context.Context, fpath string, dg ipldformat.DAGService) (ci
 	err = bufferedDS.Commit()
 
 	return nd.Cid(), err
+}
+
+type handler struct {
+	env *runtime.RunEnv
+}
+
+func (h *handler) HandleQueryStream(stream retrieval.QueryStream) {
+	defer stream.Close()
+
+	response, err := stream.ReadQueryResponse()
+	if err != nil {
+		h.env.RecordMessage("failed to read response %v", err)
+		return
+	}
+	h.env.RecordMessage("received message %s", response)
+}
+
+// runStream tests the query stream in isolation
+func runStream(runenv *runtime.RunEnv, initCtx *run.InitContext) error {
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	group := runenv.TestGroupID
+
+	// Wait until all instances in this test run have signalled.
+	initCtx.MustWaitAllInstancesInitialized(ctx)
+
+	ip := initCtx.NetClient.MustGetDataNetworkIP()
+
+	// create a new libp2p Host that listens on a random TCP port
+	h, err := libp2p.New(ctx,
+		libp2p.ListenAddrStrings(fmt.Sprintf("/ip4/%s/tcp/0", ip)),
+		// Control the maximum number of simultaneous connections a node can have
+		libp2p.ConnectionManager(connmgr.NewConnManager(
+			20,            // Lowwater
+			60,            // HighWater,
+			1*time.Second, // GracePeriod
+		)),
+		libp2p.DisableRelay(),
+		// All peer discovery happens via the dht and a single bootstrap peer
+		libp2p.Routing(func(h host.Host) (routing.PeerRouting, error) {
+			return dht.New(ctx, h)
+		}),
+		// Running without security because of a bug
+		// see https://github.com/libp2p/go-libp2p-noise/issues/70
+		// libp2p.NoSecurity,
+	)
+	if err != nil {
+		return err
+	}
+
+	info := host.InfoFromHost(h)
+
+	initCtx.SyncClient.MustPublish(ctx, peersTopic, info)
+
+	peers, err := waitForPeers(ctx, runenv, initCtx.SyncClient, h.ID())
+	if err != nil {
+		return err
+	}
+
+	peers = RandomTopology{runenv.IntParam("conn_per_peer")}.SelectPeers(peers)
+
+	if err := connectTopology(ctx, runenv, peers, h); err != nil {
+		return err
+	}
+	// Set our protocol handler and wait for everyone to do the same
+	net := retrieval.NewQueryNetwork(h)
+	net.SetDelegate(&handler{runenv})
+
+	initCtx.SyncClient.MustSignalAndWait(ctx, "connected", runenv.TestInstanceCount)
+
+	if group == "clients" {
+		// We send a message to the first peer
+		qs, err := net.NewQueryStream(peers[0].ID)
+		if err != nil {
+			return err
+		}
+		answer := deal.QueryResponse{
+			Status:                     deal.QueryResponseAvailable,
+			Size:                       uint64(10),
+			PaymentAddress:             address.TestAddress,
+			MinPricePerByte:            supply.Regions["Global"].PPB,
+			MaxPaymentInterval:         deal.DefaultPaymentInterval,
+			MaxPaymentIntervalIncrease: deal.DefaultPaymentIntervalIncrease,
+		}
+		if err := qs.WriteQueryResponse(answer); err != nil {
+			return err
+		}
+
+	}
+
+	_, err = initCtx.SyncClient.SignalAndWait(ctx, "completed", runenv.TestInstanceCount)
+	if err != nil {
+		return err
+	}
+	runenv.RecordSuccess()
+	return nil
 }

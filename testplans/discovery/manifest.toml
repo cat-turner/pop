@@ -38,3 +38,13 @@ instances = { min = 3, max = 420, default = 3 }
   regions = { type = "array", default = ["Global"] }
   conn_per_peer = { type = "int", default = 2 }
   
+
+[[testcases]]
+name = "stream"
+instances = { min = 2, max = 100, default = 10 }
+
+  [testcases.params]
+  replication = { type = "int", default = 1 }
+  regions = { type = "array", default = ["Global"] }
+  conn_per_peer = { type = "int", default = 2 }
+  

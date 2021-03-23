@@ -41,7 +41,8 @@ type Session struct {
 	done chan error
 	// unsubscribes is used to clear any subscriptions to our retrieval events when we have received
 	// all the content
-	unsub retrieval.Unsubscribe
+	unsub  retrieval.Unsubscribe
+	offers chan deal.Offer // stream of offers coming from a gossip query
 
 	mu sync.Mutex
 	// responses is a list of all the responses peers sent us back for a gossip query
@@ -50,12 +51,8 @@ type Session struct {
 	dealID *deal.ID
 }
 
-type gossipSourcing struct {
-	offers chan deal.Offer // stream of offers coming from a gossip query
-}
-
 // HandleQueryStream for direct provider queries
-func (g *gossipSourcing) HandleQueryStream(stream retrieval.QueryStream) {
+func (s *Session) HandleQueryStream(stream retrieval.QueryStream) {
 
 	defer stream.Close()
 
@@ -67,7 +64,7 @@ func (g *gossipSourcing) HandleQueryStream(stream retrieval.QueryStream) {
 
 	fmt.Printf("received an offer\n")
 
-	g.offers <- deal.Offer{
+	s.offers <- deal.Offer{
 		PeerID:   stream.OtherPeer(),
 		Response: response,
 	}
@@ -102,10 +99,6 @@ func (s *Session) QueryMiner(ctx context.Context, pid peer.ID) (*deal.Offer, err
 // QueryGossip asks the gossip network of providers if anyone can provide the blocks we're looking for
 // it blocks execution until our conditions are satisfied
 func (s *Session) QueryGossip(ctx context.Context) (*deal.Offer, error) {
-	offers := make(chan deal.Offer, 1)
-	disc := &gossipSourcing{offers}
-	s.net.SetDelegate(disc)
-
 	m := deal.Query{
 		PayloadCID:  s.root,
 		QueryParams: deal.QueryParams{},
@@ -127,7 +120,7 @@ func (s *Session) QueryGossip(ctx context.Context) (*deal.Offer, error) {
 	// for now we always take the first one we get = lowest latency
 	for {
 		select {
-		case offer := <-offers:
+		case offer := <-s.offers:
 			return &offer, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
